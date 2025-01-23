@@ -6,9 +6,10 @@ import threading
 import os
 from tqdm import tqdm
 
-def send_request(url, model, prompt, request_id, results, errors, semaphore, pbar):
+def send_request(url, model, data, request_id, results, errors, semaphore, pbar):
     """Sends a single request to the vLLM server."""
     headers = {"Content-Type": "application/json"}
+    prompt = data.get("prompt")
     pload = {
         "model": model,
         "messages": [
@@ -17,7 +18,10 @@ def send_request(url, model, prompt, request_id, results, errors, semaphore, pba
         ],
         "temperature": 0.7,
         "top_p": 0.8,
-        "repetition_penalty": 1.05,
+        "stop": ["<|eot_id|>", "<|end_of_text|>"],
+        # "repetition_penalty": 1.05,
+        "presence_penalty": 1.1,
+        "max_tokens": 1024,
         "stream": False
     }
 
@@ -29,15 +33,18 @@ def send_request(url, model, prompt, request_id, results, errors, semaphore, pba
         response_json = response.json()
         results[request_id] = {
             "request_id": request_id,
-            "prompt": prompt,
-            "response": response_json["choices"][0]["message"]["content"]
+            # "prompt": prompt,
+            "response": response_json["choices"][0]["message"]["content"],
+            **data
+            
         }
     except requests.exceptions.RequestException as e:
         errors[request_id] = str(e)
         results[request_id] = {
-            "request_id": request_id,
+            # "request_id": request_id,
             "prompt": prompt,
-            "response": None  # Indicate failed requests with response = None
+            "response": None,  # Indicate failed requests with response = None
+            **data
         }
     finally:
         semaphore.release()
@@ -47,10 +54,12 @@ def main(args):
     """Reads prompts from a JSONL file and performs batch inference."""
     url = f"http://{args.url}/v1/chat/completions"
     prompts = []
+    dataset = []
 
     with open(args.input_file, "r") as f:
         for line in f:
             data = json.loads(line)
+            dataset.append(data)
             prompts.append(data["prompt"])
 
     results = {}
@@ -59,15 +68,15 @@ def main(args):
 
     semaphore = threading.Semaphore(args.concurrent_request)
 
-    with tqdm(total=len(prompts), desc="Processing requests") as pbar:
+    with tqdm(total=len(dataset), desc="Processing requests") as pbar:
         threads = []
-        for i, prompt in enumerate(prompts):
+        for i, data in enumerate(dataset):
             thread = threading.Thread(
                 target=send_request, 
                 args=(
                     url, 
                     args.model, 
-                    prompt, i, 
+                    data, i, 
                     results, 
                     errors, 
                     semaphore, 
@@ -111,8 +120,8 @@ def main(args):
     input_file_name = os.path.splitext(args.input_file)[0]
     stats_file_name = f"{input_file_name}_stats.json"
 
-    with open(stats_file_name, "w") as f:
-        json.dump(stats, f, indent=4)
+    # with open(stats_file_name, "w") as f:
+    #     json.dump(stats, f, indent=4)
 
     print(f"Statistics written to {stats_file_name}")
 
@@ -131,8 +140,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Batch inference script for vLLM server.")
     parser.add_argument("-m", "--model", type=str, required=False, default="llama2-7b-hf", help="Model name")
     parser.add_argument("-u", "--url", type=str, required=False, default="localhost:8001", help="Inference server URL")
-    parser.add_argument("--input_file", type=str, required=False, default="prompts.jsonl", help="JSONL file with input prompts")
-    parser.add_argument("--results_file", type=str, required=False, default="results.jsonl", help="Output file for results (JSONL)")
+    parser.add_argument("--input-file", type=str, required=False, default="prompts.jsonl", help="JSONL file with input prompts")
+    parser.add_argument("--results-file", type=str, required=False, default="results.jsonl", help="Output file for results (JSONL)")
     parser.add_argument("-c", "--concurrent_request", type=int, required=False, default=10, help="Number of concurrent requests")
     args = parser.parse_args()
 
